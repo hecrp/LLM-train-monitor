@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Training Monitor</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #00ff00;
+            font-family: 'VT323', monospace;
+            padding: 20px;
+            margin: 0;
+        }
+        #terminal {
+            background-color: #000;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            width: 90%;
+            margin: 20px auto;
+            height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 0 10px #00ff00;
+        }
+        #input {
+            background-color: transparent;
+            border: none;
+            color: #00ff00;
+            font-family: 'VT323', monospace;
+            width: 100%;
+            outline: none;
+            font-size: 18px;
+        }
+        .prompt {
+            color: #00ff00;
+        }
+        .output {
+            margin-bottom: 10px;
+        }
+        @font-face {
+            font-family: 'VT323';
+            src: url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+        }
+    </style>
+</head>
+<body>
+    <div id="terminal">
+        <div class="output"></div>
+        <div>
+            <span class="prompt">C:\LLM-Monitor></span>
+            <input type="text" id="input" autofocus>
+        </div>
+    </div>
+
+    <script>
+        const input = document.getElementById('input');
+        const terminal = document.getElementById('terminal');
+
+        // Initial messages to be typed out
+        const initialMessages = [
+            "My LLM Training Monitor v1.0",
+            "A Rust-based CLI tool for monitoring LLM training processes.",
+            "Type 'help' for available commands or try:",
+            "- 'about' for project information",
+            "- 'features' to see what this tool can do",
+            "- 'usage' for instructions on how to use the monitor"
+        ];
+
+        // Function to simulate typing
+        function typeWriter(text, element, index = 0) {
+            if (index < text.length) {
+                element.innerHTML += text.charAt(index);
+                setTimeout(() => typeWriter(text, element, index + 1), 20);
+            } else {
+                element.innerHTML += '<br>';
+                if (initialMessages.length > 0) {
+                    const newElement = document.createElement('div');
+                    newElement.classList.add('output');
+                    terminal.insertBefore(newElement, input.parentElement);
+                    typeWriter(initialMessages.shift(), newElement);
+                }
+            }
+        }
+
+        // Start typing initial messages
+        if (initialMessages.length > 0) {
+            const firstElement = document.querySelector('.output');
+            typeWriter(initialMessages.shift(), firstElement);
+        }
+
+        input.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') {
+                const command = this.value.trim();
+                executeCommand(command);
+                this.value = '';
+            }
+        });
+
+        function executeCommand(command) {
+            addToTerminal(`<span class="prompt">C:\\LLM-Monitor></span> ${command}`);
+
+            switch(command.toLowerCase()) {
+                case 'help':
+                    typeMultipleLines([
+                        'Available commands:',
+                        '- help: Show this help message',
+                        '- about: Show information about LLM Training Monitor',
+                        '- features: List features of the monitor',
+                        '- usage: Show usage instructions',
+                        '- clear: Clear the terminal',
+                        '- exit: Close the program (simulated)'
+                    ]);
+                    break;
+                case 'about':
+                    typeMultipleLines([
+                        'LLM Training Monitor v1.0',
+                        'A Rust-based CLI tool for monitoring Large Language Model training processes.',
+                        'It provides real-time information about system resources used during LLM training.',
+                        'Created by: Héctor Rodríguez (hecrp)',
+                        'GitHub: https://github.com/hecrp/LLM-train-monitor'
+                    ]);
+                    break;
+                case 'features':
+                    typeMultipleLines([
+                        'Features of LLM Training Monitor:',
+                        '- Monitor CPU usage',
+                        '- Monitor GPU usage (using NVIDIA Management Library)',
+                        '- Track memory consumption',
+                        '- Display process-specific information',
+                        '- Monitor training log files',
+                        '- Extract metrics using regex patterns'
+                    ]);
+                    break;
+                case 'usage':
+                    typeMultipleLines([
+                        'Usage: ./llmtrain_monitor <process_name> <update_interval_seconds> [log_file_path] [metric_regex]',
+                        '<process_name>: The name of the LLM training process to monitor',
+                        '<update_interval_seconds>: The interval (in seconds) between updates',
+                        '[log_file_path]: Optional path to the log file to monitor',
+                        '[metric_regex]: Optional regex to extract metrics from log file',
+                        'Example: ./llmtrain_monitor my_llm_process 5 /path/to/logfile.log "loss: (\\d+\\.\\d+)"'
+                    ]);
+                    break;
+                case 'clear':
+                    terminal.innerHTML = '';
+                    addPrompt();
+                    input.focus();
+                    break;
+                case 'exit':
+                    typeMultipleLines([
+                        'Closing LLM Training Monitor...',
+                        'Thank you for using our tool!'
+                    ]);
+                    input.disabled = true;
+                    break;
+                default:
+                    typeMultipleLines([
+                        `Command not recognized: ${command}`,
+                        'Type "help" for a list of available commands.'
+                    ]);
+            }
+        }
+
+        function typeMultipleLines(lines) {
+            const outputDiv = document.createElement('div');
+            outputDiv.classList.add('output');
+            terminal.insertBefore(outputDiv, input.parentElement);
+            
+            function typeLine(index) {
+                if (index < lines.length) {
+                    typeWriter(lines[index], outputDiv, 0);
+                    setTimeout(() => typeLine(index + 1), lines[index].length * 20 + 200);
+                }
+            }
+            
+            typeLine(0);
+        }
+
+        function addToTerminal(text) {
+            const output = document.createElement('div');
+            output.classList.add('output');
+            output.innerHTML = text;
+            terminal.insertBefore(output, input.parentElement);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function addPrompt() {
+            const promptDiv = document.createElement('div');
+            promptDiv.innerHTML = '<span class="prompt">C:\\LLM-Monitor></span> ';
+            promptDiv.appendChild(input);
+            terminal.appendChild(promptDiv);
+        }
+    </script>
+</body>
+</html>
