@@ -14,8 +14,14 @@
 use std::time::Duration;
 use sysinfo::{System, SystemExt, ProcessExt, CpuExt};
 use clap::{App, Arg};
+use crossterm::{
+    execute,
+    terminal::{Clear, ClearType},
+    cursor::MoveTo,
+};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::stdout;
+use std::io::{BufRead, BufReader, Write};
 use regex::Regex;
 
 // Under development.
@@ -52,88 +58,94 @@ impl LLMTrainMonitor {
     }
 
     // Display current system information
-    fn display(&self) {
-        println!("LLM Training Monitor");
-        println!("-------------------");
+    fn display<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writeln!(writer, "LLM Training Monitor")?;
+        writeln!(writer, "-------------------")?;
         
         // CPU metrics
         let cpu_usage = self.system.global_cpu_info().cpu_usage();
-        println!("CPU Usage: {:.2}%", cpu_usage);
+        writeln!(writer, "CPU Usage: {:.2}%", cpu_usage)?;
 
         // GPU metrics. Now it can be run without GPU!
-        if self.display_gpu_info().is_none() {
-            println!("GPU information not available");
+        if let Err(_) = self.display_gpu_info(writer) {
+            writeln!(writer, "GPU information not available")?;
         }
 
         let total_memory = self.system.total_memory();
         let used_memory = self.system.used_memory();
         // print memory in MB!!
-        println!("Memory Usage: {} / {} MB", 
+        writeln!(writer, "Memory Usage: {} / {} MB", 
             used_memory / 1024 / 1024, 
-            total_memory / 1024 / 1024);
+            total_memory / 1024 / 1024)?;
 
         if let Some(process) = self.system.processes_by_exact_name(&self.process_name).next() {
-            println!("Process CPU Usage: {:.2}%", process.cpu_usage());
-            println!("Process Memory Usage: {} MB", process.memory() / 1024 / 1024);
+            writeln!(writer, "Process CPU Usage: {:.2}%", process.cpu_usage())?;
+            writeln!(writer, "Process Memory Usage: {} MB", process.memory() / 1024 / 1024)?;
         } else {
-            println!("Process '{}' not found", self.process_name);
+            writeln!(writer, "Process '{}' not found", self.process_name)?;
         }
 
-        self.display_log_metrics();
+        self.display_log_metrics(writer)?;
+        Ok(())
     }
 
     // Display GPU information. Now works with multiple GPUs. Dope...
-    fn display_gpu_info(&self) -> Option<()> {
-        let nvml = self.nvml.as_ref()?;
-        let device_count = nvml.device_count().ok()?;
+    fn display_gpu_info<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let nvml = self.nvml.as_ref().ok_or(std::io::Error::new(std::io::ErrorKind::Other, "NVML not initialized"))?;
+        let device_count = nvml.device_count().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         
         for i in 0..device_count {
-            let device = nvml.device_by_index(i).ok()?;
-            println!("GPU {}:", i);
+            let device = nvml.device_by_index(i).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            writeln!(writer, "GPU {}:", i)?;
             if let Ok(gpu_utilization) = device.utilization_rates() {
-                println!("  Usage: {}%", gpu_utilization.gpu);
+                writeln!(writer, "  Usage: {}%", gpu_utilization.gpu)?;
             }
             if let Ok(gpu_memory) = device.memory_info() {
-                println!("  Memory: {} / {} MB (Used/Total)", 
+                writeln!(writer, "  Memory: {} / {} MB (Used/Total)", 
                     gpu_memory.used / 1024 / 1024, 
-                    gpu_memory.total / 1024 / 1024);
+                    gpu_memory.total / 1024 / 1024)?;
             }
             if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
-                println!("  Temperature: {}°C", temp);
+                writeln!(writer, "  Temperature: {}°C", temp)?;
             }
         }
-        Some(())
+        Ok(())
     }
 
     // Display log metrics
-    fn display_log_metrics(&self) {
+    fn display_log_metrics<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         if let (Some(log_path), Some(regex)) = (&self.log_file_path, &self.metric_regex) {
             if let Ok(file) = File::open(log_path) {
                 let reader = BufReader::new(file);
-                for line in reader.lines().flatten().rev().take(10) {
-                    if let Some(captures) = regex.captures(&line) {
+                let lines: Vec<_> = reader.lines().collect::<Result<_, _>>()?;
+                for line in lines.iter().rev().take(10) {
+                    if let Some(captures) = regex.captures(line) {
                         if let Some(metric) = captures.get(1) {
-                            println!("Extracted metric: {}", metric.as_str());
+                            writeln!(writer, "Extracted metric: {}", metric.as_str())?;
                         }
                     }
                 }
             } else {
-                println!("Failed to open log file");
+                writeln!(writer, "Failed to open log file")?;
             }
         }
+        Ok(())
     }
 
     // Main loop to continuously update and display information
-    fn run(&mut self) {
+    fn run(&mut self) -> std::io::Result<()> {
+        let mut stdout = stdout();
         loop {
             self.update();
-            self.display();
+            execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
+            self.display(&mut stdout)?;
+            stdout.flush()?;
             std::thread::sleep(self.update_interval);
         }
     }
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     // CLI interface. parse command line arguments:
     let matches = App::new("LLM Training Monitor")
         .version("0.1.0")
@@ -164,5 +176,5 @@ fn main() {
 
     // Create and run the monitor
     let mut monitor = LLMTrainMonitor::new(process_name, update_interval, log_file_path, metric_regex);
-    monitor.run();
+    monitor.run()
 }
