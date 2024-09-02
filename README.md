@@ -54,6 +54,8 @@ If the specified process is not found, the monitor will indicate this in the out
 - sysinfo: For system and process information
 - nvml-wrapper: For NVIDIA GPU monitoring
 - clap: For building the CLI interface
+- crossterm: For terminal UI
+- regex: For parsing log files (testing)
 
 ## License
 

@@ -1,7 +1,7 @@
 [package]
 name = "llmtrain_monitor"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Héctor Rodríguez <hectorp94@hotmail.com>"]
 description = "A monitoring tool for LLM training processes"
 
