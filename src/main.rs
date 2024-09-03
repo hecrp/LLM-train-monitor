@@ -16,18 +16,19 @@ use sysinfo::{System, SystemExt, ProcessExt, CpuExt};
 use clap::{App, Arg};
 use crossterm::{
     execute,
-    terminal::{Clear, ClearType},
-    cursor::MoveTo,
+    terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    cursor,
 };
-use std::fs::File;
 use std::io::stdout;
-use std::io::{BufRead, BufReader, Write};
 use regex::Regex;
-
-// Under development.
-// Right now, the program is general-purpose, not LLM-specific. Will work on it.
-// TODO: Try crossterm and view update instead of println!(). 
-// TODO: Add support for specific frameworks (Hugging Face Transformers?).
+use tui::{
+    backend::CrosstermBackend,
+    layout::{Layout, Constraint, Direction},
+    widgets::{Block, Borders, Paragraph, List, ListItem},
+    style::{Style, Color},
+    Terminal,
+};
+use std::env;
 
 // Struct to hold the monitor's state
 struct LLMTrainMonitor {
@@ -57,91 +58,127 @@ impl LLMTrainMonitor {
         self.system.refresh_all();
     }
 
-    // Display current system information
-    fn display<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        writeln!(writer, "LLM Training Monitor")?;
-        writeln!(writer, "-------------------")?;
-        
-        // CPU metrics
-        let cpu_usage = self.system.global_cpu_info().cpu_usage();
-        writeln!(writer, "CPU Usage: {:.2}%", cpu_usage)?;
-
-        // GPU metrics. Now it can be run without GPU!
-        if let Err(_) = self.display_gpu_info(writer) {
-            writeln!(writer, "GPU information not available")?;
-        }
-
-        let total_memory = self.system.total_memory();
-        let used_memory = self.system.used_memory();
-        // print memory in MB!!
-        writeln!(writer, "Memory Usage: {} / {} MB", 
-            used_memory / 1024 / 1024, 
-            total_memory / 1024 / 1024)?;
-
-        if let Some(process) = self.system.processes_by_exact_name(&self.process_name).next() {
-            writeln!(writer, "Process CPU Usage: {:.2}%", process.cpu_usage())?;
-            writeln!(writer, "Process Memory Usage: {} MB", process.memory() / 1024 / 1024)?;
-        } else {
-            writeln!(writer, "Process '{}' not found", self.process_name)?;
-        }
-
-        self.display_log_metrics(writer)?;
-        Ok(())
+    // Get GPU information
+    fn get_gpu_info(&self) -> Option<(f32, u64, u64, u32)> {
+        self.nvml.as_ref().and_then(|nvml| {
+            nvml.device_by_index(0).ok().and_then(|device| {
+                let utilization = device.utilization_rates().ok()?;
+                let memory = device.memory_info().ok()?;
+                let temp = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu).ok()?;
+                Some((utilization.gpu as f32, memory.used, memory.total, temp))
+            })
+        })
     }
 
-    // Display GPU information. Now works with multiple GPUs. Dope...
-    fn display_gpu_info<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        let nvml = self.nvml.as_ref().ok_or(std::io::Error::new(std::io::ErrorKind::Other, "NVML not initialized"))?;
-        let device_count = nvml.device_count().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-        
-        for i in 0..device_count {
-            let device = nvml.device_by_index(i).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            writeln!(writer, "GPU {}:", i)?;
-            if let Ok(gpu_utilization) = device.utilization_rates() {
-                writeln!(writer, "  Usage: {}%", gpu_utilization.gpu)?;
-            }
-            if let Ok(gpu_memory) = device.memory_info() {
-                writeln!(writer, "  Memory: {} / {} MB (Used/Total)", 
-                    gpu_memory.used / 1024 / 1024, 
-                    gpu_memory.total / 1024 / 1024)?;
-            }
-            if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
-                writeln!(writer, "  Temperature: {}°C", temp)?;
-            }
-        }
-        Ok(())
+    // Get process information
+    fn get_process_info(&self) -> Option<(f32, u64)> {
+        self.system.processes_by_exact_name(&self.process_name).next().map(|process| {
+            (process.cpu_usage(), process.memory())
+        })
     }
-
-    // Display log metrics
-    fn display_log_metrics<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        if let (Some(log_path), Some(regex)) = (&self.log_file_path, &self.metric_regex) {
-            if let Ok(file) = File::open(log_path) {
-                let reader = BufReader::new(file);
-                let lines: Vec<_> = reader.lines().collect::<Result<_, _>>()?;
-                for line in lines.iter().rev().take(10) {
-                    if let Some(captures) = regex.captures(line) {
-                        if let Some(metric) = captures.get(1) {
-                            writeln!(writer, "Extracted metric: {}", metric.as_str())?;
-                        }
-                    }
-                }
-            } else {
-                writeln!(writer, "Failed to open log file")?;
-            }
-        }
-        Ok(())
-    }
-
     // Main loop to continuously update and display information
     fn run(&mut self) -> std::io::Result<()> {
+        enable_raw_mode()?;
         let mut stdout = stdout();
+        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let username = env::var("USER").unwrap_or_else(|_| "Unknown".to_string());
+        let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "Unknown".to_string());
+        let os_info = format!("{} {}", self.system.name().unwrap_or_default(), self.system.os_version().unwrap_or_default());
+        
+        let gpu_info = self.get_gpu_info();
+        let gpu_summary = match &gpu_info {
+            Some((_, _, gpu_memory_total, _)) => format!("GPU: {} MB", gpu_memory_total / 1024 / 1024),
+            None => "No GPU detected".to_string(),
+        };
+
+        let ascii_frame1 = format!(r#"
+  ʕ •ᴥ•ʔ                LLM Training Monitor v0.1.0
+  ʕ •ᴥ•ʔ                 User: {}@{} | OS: {}
+  ʕ •ᴥ•ʔ                 {}
+        "#, username, hostname, os_info, gpu_summary);
+
+        let ascii_frame2 = format!(r#"
+  ʕ -ᴥ-ʔ                LLM Training Monitor v0.1.0
+  ʕ -ᴥ-ʔ                 User: {}@{} | OS: {}
+  ʕ -ᴥ-ʔ                 {}
+        "#, username, hostname, os_info, gpu_summary);
+
+        let mut frame_toggle = false;
+
         loop {
             self.update();
-            execute!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
-            self.display(&mut stdout)?;
-            stdout.flush()?;
-            std::thread::sleep(self.update_interval);
+            terminal.draw(|f| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(1)
+                    .constraints([
+                        Constraint::Length(5),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Min(0),
+                    ].as_ref())
+                    .split(f.size());
+
+                let title = Paragraph::new(if frame_toggle { ascii_frame1.clone() } else { ascii_frame2.clone() })
+                    .style(Style::default().fg(Color::Green))
+                    .block(Block::default().borders(Borders::NONE));
+                f.render_widget(title, chunks[0]);
+
+                frame_toggle = !frame_toggle;
+
+                let cpu_usage = self.system.global_cpu_info().cpu_usage();
+                let cpu_info = Paragraph::new(format!("CPU Usage: {:.2}%", cpu_usage))
+                    .block(Block::default().title("CPU Info").borders(Borders::ALL));
+                f.render_widget(cpu_info, chunks[1]);
+
+                let memory_info = Paragraph::new(format!(
+                    "Memory Usage: {} / {} MB",
+                    self.system.used_memory() / 1024 / 1024,
+                    self.system.total_memory() / 1024 / 1024
+                ))
+                .block(Block::default().title("System Memory").borders(Borders::ALL));
+                f.render_widget(memory_info, chunks[2]);
+
+                if let Some((process_cpu_usage, process_memory)) = self.get_process_info() {
+                    let process_info = List::new(vec![
+                        ListItem::new(format!("CPU Usage: {:.2}%", process_cpu_usage)),
+                        ListItem::new(format!("Memory Usage: {} MB", process_memory / 1024 / 1024)),
+                    ])
+                    .block(Block::default().title(format!("Process: {}", self.process_name)).borders(Borders::ALL));
+                    f.render_widget(process_info, chunks[3]);
+                } else {
+                    let no_process_info = Paragraph::new(format!("Process '{}' not found", self.process_name))
+                        .block(Block::default().title("Process Info").borders(Borders::ALL));
+                    f.render_widget(no_process_info, chunks[3]);
+                }
+
+                if let Some((gpu_usage, gpu_memory_used, gpu_memory_total, gpu_temp)) = gpu_info {
+                    let gpu_info = List::new(vec![
+                        ListItem::new(format!("GPU Usage: {:.2}%", gpu_usage)),
+                        ListItem::new(format!("Memory: {} / {} MB", gpu_memory_used / 1024 / 1024, gpu_memory_total / 1024 / 1024)),
+                        ListItem::new(format!("Temperature: {}°C", gpu_temp)),
+                    ])
+                    .block(Block::default().title("GPU Info").borders(Borders::ALL));
+                    f.render_widget(gpu_info, chunks[3]);
+                }
+            })?;
+
+            if crossterm::event::poll(self.update_interval)? {
+                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                    if key.code == crossterm::event::KeyCode::Char('q') {
+                        break;
+                    }
+                }
+            }
         }
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
+
+        Ok(())
     }
 }
 
@@ -160,11 +197,11 @@ fn main() -> std::io::Result<()> {
             .required(true)
             .index(2))
         .arg(Arg::with_name("log_file_path")
-            .help("Path to the log file to monitor")
+            .help("Path to the log file to monitor (under development)")
             .required(false)
             .index(3))
         .arg(Arg::with_name("metric_regex")
-            .help("Regex to extract metrics from log file")
+            .help("Regex to extract metrics from log file (under development)")
             .required(false)
             .index(4))
         .get_matches();
